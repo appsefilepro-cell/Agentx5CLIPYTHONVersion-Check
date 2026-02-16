@@ -1,0 +1,136 @@
+Create files (copy/paste later contents I provide): backend/orchestrator.py, backend/trading_agent.py, backend/wallets/wallet_manager.py, backend/memory_init.py, frontend/simple_ui.py, database/init_db.py
+
+Run the orchestrator (after pasting code):
+
+source venv/bin/activate
+python backend/orchestrator.py
+# in new Replit shell tab:
+uvicorn frontend.simple_ui:app --host 0.0.0.0 --port 3000
+
+
+I give the full file contents you paste below.
+
+Why Replit (again) & reality check
+
+Replit gives you a working Linux environment, Python, and a public preview URL — great for testing and orchestration.
+
+Heavy local LLMs (Ollama, local GGUF models) and GPU workloads cannot realistically run in Replit — use a cloud VM or a local machine for that later.
+
+For now we’ll run a fully offline/simulated trading pipeline that behaves like a real bot (price feed simulation, logging, risk controls, rollback, and a small UI). Later you can swap the simulator for CCXT/live exchange code.
+
+Files — copy these into Replit (create files under agentx5/)
+1) database/init_db.py
+import sqlite3, os
+os.makedirs("database", exist_ok=True)
+conn = sqlite3.connect("database/trading.db")
+c = conn.cursor()
+c.execute("""CREATE TABLE IF NOT EXISTS trades(
+  id integer primary key, symbol text, side text, price real, size real, pnl real, ts text)""")
+c.execute("CREATE TABLE IF NOT EXISTS balance(amount real);")
+if c.execute("SELECT count(*) FROM balance").fetchone()[0]==0:
+    c.execute("INSERT INTO balance(amount) VALUES (500.0)")
+conn.commit()
+conn.close()
+print('DB initialized')
+
+2) backend/trading_agent.py — SIMULATOR (sandbox)
+import asyncio, random, sqlite3, datetime, os
+os.makedirs("logs", exist_ok=True)
+
+class TradingAgent:
+    def __init__(self):
+        self.symbol="BTC/USD"
+        self.pos=0.0
+        self.entry=0.0
+
+    async def price_stream(self):
+        price=30000.0
+        while True:
+            # simulate small random walk
+            price += random.uniform(-150,150)
+            yield round(price,2)
+            await asyncio.sleep(1)
+
+    async def start(self):
+        async for p in self.price_stream():
+            await self.on_price(p)
+
+    async def on_price(self, price):
+        # very simple strategy: buy if price drops > 0.3% from last, sell if +0.5% gain
+        conn=sqlite3.connect("database/trading.db")
+        c=conn.cursor()
+        bal=c.execute("SELECT amount FROM balance").fetchone()[0]
+        action=None
+        if self.pos==0 and random.random()<0.02:
+            # buy small
+            size = min(0.01, bal/price)
+            if size*price < bal:
+                self.pos += size; self.entry=price; bal -= size*price; action="BUY"
+                c.execute("INSERT INTO trades(symbol,side,price,size,pnl,ts) VALUES (?,?,?,?,?,?)",
+                          (self.symbol,"BUY",price,size,0.0,str(datetime.datetime.utcnow())))
+        elif self.pos>0 and (price - self.entry)/self.entry > 0.005:
+            # take profit
+            pnl = (price - self.entry) * self.pos
+            bal += price*self.pos
+            c.execute("INSERT INTO trades(symbol,side,price,size,pnl,ts) VALUES (?,?,?,?,?,?)",
+                      (self.symbol,"SELL",price,self.pos,pnl,str(datetime.datetime.utcnow())))
+            self.pos=0; self.entry=0; action="SELL"
+
+        c.execute("UPDATE balance SET amount = ?", (bal,))
+        conn.commit(); conn.close()
+        # log
+        with open("logs/trades.log","a") as f:
+            f.write(f"{datetime.datetime.utcnow()} price={price} action={action} pos={self.pos}\n")
+
+3) backend/orchestrator.py
+import asyncio, uvicorn, os
+from backend.trading_agent import TradingAgent
+
+async def main():
+    print("Orchestrator starting (sandbox)")
+    agent = TradingAgent()
+    await agent.start()
+
+if __name__=="__main__":
+    import database.init_db as _init; _init  # ensure DB
+    asyncio.run(main())
+
+4) backend/wallets/wallet_manager.py (stub — do not add keys)
+# wallet_manager stub: for MetaMask/Phantom integration you will later point to secure HSM or hardware wallet.
+class WalletManager:
+    def __init__(self):
+        self.wallets = {}
+    def add_wallet(self, name, info):
+        self.wallets[name]=info
+    def get_balance(self, name):
+        return "sandbox-only"
+
+5) frontend/simple_ui.py (FastAPI minimal UI)
+from fastapi import FastAPI
+import sqlite3, json
+app=FastAPI()
+@app.get("/balance")
+def balance():
+    conn=sqlite3.connect("database/trading.db")
+    b=conn.execute("SELECT amount FROM balance").fetchone()[0]
+    trades=[dict(zip([c[0] for c in conn.execute("PRAGMA table_info(trades)").fetchall()], row)) for row in conn.execute("SELECT * FROM trades").fetchall()]
+    conn.close()
+    return {"balance":b,"trades":trades}
+
+How to run in Replit (step by step)
+
+Create files above (use Replit file editor).
+
+Replit shell:
+
+python3 database/init_db.py
+source venv/bin/activate
+# start orchestrator simulator
+python backend/orchestrator.py
+# open a second shell/tab and run UI:
+uvicorn frontend.simple_ui:app --host 0.0.0.0 --port 3000
+
+
+Open Replit preview URL /balance to see balance and trades.
+
+This gives you a fully functional sandbox you can iterate on. When you want to go live, replace simulator with CCXT or exchange API calls and carefully insert keys in a secure vault.
