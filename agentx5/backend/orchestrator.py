@@ -1,22 +1,35 @@
-import asyncio, uvicorn, os, sys
+import asyncio
+import os
+import sys
 
-# Add the current directory to sys.path so we can import modules
-sys.path.append(os.getcwd())
+# Ensure agentx5/ root is on sys.path for package imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.trading_agent import TradingAgent
+from backend.wallets.wallet_manager import WalletManager
+
 
 async def main():
-    print("Orchestrator starting (sandbox)")
+    print("[Orchestrator] Starting AgentX5...")
+
+    # Init wallet manager
+    wm = WalletManager()
+    wm.add_wallet("main", {"type": "sandbox", "currency": "USD"})
+    print(f"[Orchestrator] Wallet loaded: {wm.get_balance('main')}")
+
+    # Start trading agent
     agent = TradingAgent()
+    print("[Orchestrator] Trading agent initialized. Running...")
     await agent.start()
 
-if __name__=="__main__":
-    # Ensure DB is initialized
-    import database.init_db as _init
-    if not os.path.exists("database/trading.db"):
-         print("Initializing DB...")
-         # Trigger the init logic if it was in a function, but it's top level in the provided file
-         # The import above runs the top level code.
-         pass
-         
+
+if __name__ == "__main__":
+    # Ensure DB exists before starting
+    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database", "trading.db")
+    if not os.path.exists(db_path):
+        print("[Orchestrator] DB not found — running init...")
+        import subprocess
+        init_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "database", "init_db.py")
+        subprocess.run([sys.executable, init_path], check=True)
+
     asyncio.run(main())
